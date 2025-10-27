@@ -1,0 +1,138 @@
+CODE WALKTHROUGH. Backtest_Scaffold
+
+let’s dissect this Backtest Scaffold line by line, both in Python terms and in quant terms (what it really implies about trading).
+
+File header & module imports
+
+#!/usr/bin/env python3
+"""Backtest Scaffold (Educational)
+
+This is a minimal, readable scaffold for a simple strategy backtest.
+Fill in signal logic where indicated.
+"""
+import sys, pandas as pd
+
+	•	Shebang: lets you run the script directly on Unix-like systems.
+	•	Docstring: clearly signals this is a teaching scaffold, not production code.
+	•	Imports:
+	◦	sys for reading a command-line filepath.
+	◦	pandas for tabular/time-series work.
+Quant meaning: we’re about to run a very minimal daily bar backtest from a CSV—no slippage model, no borrow costs, no leverage/margin model, no execution venue, etc. It’s intentionally simple so the structure of a backtest is plain to see.
+
+Signal generation
+
+def generate_signals(df):
+    # TODO: Replace with actual signal logic (e.g., mean reversion or momentum)
+    # Example: buy when return is negative yesterday (toy logic)
+    df = df.copy()
+    df["signal"] = (df["close"].pct_change().shift(1) < 0).astype(int)  # 1 = long, 0 = flat
+    return df
+
+	•	df = df.copy(): work on a copy so we don’t mutate the input.
+	•	df["close"].pct_change() computes the simple return of the close price from day t-1 to t.
+	•	.shift(1) shifts that return back one day so that yesterday’s return sits on today’s row.
+	•	( … < 0 ) becomes a boolean: True if yesterday was down; False otherwise.
+	•	.astype(int) converts to 1 (True) or 0 (False).
+	◦	Interpretation: 1 = long (be in the market), 0 = flat (hold cash).
+	•	The result is a signal aligned for execution: the decision “was yesterday down?” is known at today’s open, so applying it to today’s return (after shifting later) avoids look-ahead bias.
+Quant meaning: The toy factor is a single-period mean-reversion intuition: “If price fell yesterday, buy today.” This is not a recommendation; it’s an example of state → action mapping. Crucially, the .shift(1) enforces chronological honesty—you react to the past, not the future.
+
+Strategy application (returns + costs)
+
+def apply_strategy(df, fee_bps=1):
+    df = df.copy()
+    df["ret"] = df["close"].pct_change().fillna(0)
+    df["strategy_ret"] = df["signal"].shift(1).fillna(0) * df["ret"]
+    # approximate trading cost:
+    trades = df["signal"].diff().abs().fillna(0)
+    df["strategy_ret"] -= trades * (fee_bps / 10000.0)
+    return df
+
+	•	df["ret"]: underlying daily simple return from close to close. First row becomes NaN, then fillna(0) sets it to zero.
+	•	df["signal"].shift(1): the position used for today’s P&L is yesterday’s signal.
+	◦	This enforces no look-ahead in execution: if you decide at time t based on data up to t, your P&L accrues over t→t+1.
+	◦	Multiplying position_t * return_{t→t+1} gives the strategy daily return (ignoring costs).
+	•	Trading cost model:
+	◦	trades = df["signal"].diff().abs() is 1 when you change state (0→1 or 1→0), and 0 otherwise.
+	◦	fee_bps / 10000.0 converts basis points to a fraction (e.g., 1 bps = 0.0001).
+	◦	df["strategy_ret"] -= trades * fee subtracts a fixed cost each time you flip.
+	▪	If you intend both entry and exit costs to be charged, this already handles it because each flip triggers a cost.
+	▪	If your broker charges per side (e.g., 1 bps to buy, 1 bps to sell), then the current code is correct: you’ll pay once on the buy flip and once on the sell flip.
+	▪	If you intended a round-trip fee (e.g., a single 1-bps cost for the entire round trip), you’d need a different accounting.
+Quant meaning:
+	•	Alignment matters: signal.shift(1) → hold the position decided yesterday across today’s return. That’s the right habit to avoid cheating.
+	•	Costs: This is a coarse cost model—no spread/slippage, no size dependence, no venue fees, no borrow, no market impact. It’s just a flat penalty per toggle. Enough to remind you that friction exists; not enough for production realism.
+
+Main: load, validate, run, summarize
+
+def main(path):
+    df = pd.read_csv(path, parse_dates=["date"]).sort_values("date")
+    if not {"date", "close"}.issubset(df.columns):
+        raise ValueError("CSV must include 'date' and 'close' columns.")
+    df = generate_signals(df)
+    df = apply_strategy(df)
+    cum = (1 + df["strategy_ret"]).cumprod().iloc[-1] - 1
+    print("Backtest Scaffold (Educational)")
+    print("-" * 30)
+    print(f"Cumulative return (toy logic): {cum:.2%}")
+    print("Next steps: replace signal logic, add risk metrics, validate over multiple periods.")
+
+	•	Load & sort: ensures time order (critical for rolling logic and returns).
+	•	Schema check: requires at least date and close (you can add more columns later).
+	•	Pipeline: generate_signals → apply_strategy.
+	•	Cumulative return:
+	◦	(1 + r).cumprod() chains daily growth.
+	◦	.iloc[-1] - 1 converts cumulative growth to total return.
+	•	Prints:
+	◦	A single KPI: cumulative return for the toy strategy.
+	◦	A nudge toward next steps (risk, robustness, more periods).
+Quant meaning: This is the minimum viable backtest: take prices → make a signal → translate to position → multiply by returns → subtract a simple cost → report a headline number. In reality, you’d also want risk metrics (vol, Sharpe, drawdown), stability checks (rolling window), and robustness (multiple regimes, out-of-sample testing).
+
+CLI wrapper
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python scripts/backtest_scaffold.py path/to/ohlc.csv")
+        sys.exit(1)
+    main(sys.argv[1])
+
+	•	Standard pattern: if run as a script, require a path and call main.
+
+What’s really going on (the “why it matters” layer)
+	1	Causality & alignment
+	◦	The .shift(1) pattern (both in generating the “yesterday” condition and applying yesterday’s signal to today’s return) is everything. It keeps you honest about what was knowable when.
+	2	State transitions as cost triggers
+	◦	signal.diff().abs() is a clever, vectorized way to count entries/exits. Each change from 0↔1 incurs a fee.
+	◦	In production, costs are more complex: spread, slippage, partial fills, market impact, fee tiers, borrow/financing, etc.
+	3	Returns model
+	◦	Uses simple returns (pct_change). For multi-day compounding and some statistical work, log returns can be convenient.
+	◦	If you ever mix intraday execution with close-to-close bars, you need to be explicit about execution price (open vs close vs VWAP) and latency.
+	4	Data hygiene
+	◦	The scaffold assumes adjusted close (splits/dividends handled). If not, your returns can be wrong.
+	◦	Missing days/holidays? Sorting and using daily frequency helps, but cross-asset/irregular calendars need care.
+	5	Risk & robustness are missing (by design)
+	◦	To avoid “pretty lies,” you’ll want Sharpe, Sortino, max drawdown, hit rate, tail risk (skew/kurtosis), rolling metrics, and out-of-sample tests (walk-forward, cross-validation by regime).
+
+Concrete upgrades (low lift → higher rigor)
+	•	Position sizing: scale exposure (e.g., 0…1 continuous) or target volatility (e.g., inverse vol).
+	•	Fees: add proportional cost to traded notional and a fixed fee per order; model both entry and exit explicitly.
+	•	Slippage: subtract a fraction of the daily range or use a simple spread proxy.
+	•	Execution rule: use next day’s open (requires open prices), not close-to-close, to reflect overnight latency.
+	•	Risk metrics: compute annualized vol, Sharpe/Sortino, max DD, and a small tearsheet.
+	•	Rolling windows: show rolling Sharpe and rolling drawdown to visualize stability.
+	•	Walk-forward: split data into train/validation/test segments (especially for any tuned parameters).
+	•	Log returns: optionally switch to np.log(close).diff() for some analyses.
+
+Micro-review of the toy logic
+	•	Signal: (yesterday’s return < 0) → long today.
+	◦	This is a naive one-lag mean-reversion heuristic.
+	◦	It might look decent in certain microstructure settings, but without real execution modeling, it’s just a sandbox example.
+	•	Cost penalty: One cost per flip.
+	◦	If you intend per-side costs, it’s already correct (you’ll pay on both the up-flip and the down-flip).
+	◦	If you want a round-trip cost charged only once per full buy→sell→(buy) cycle, you’d need to track state duration and charge differently.
+
+
+
+
+
+
