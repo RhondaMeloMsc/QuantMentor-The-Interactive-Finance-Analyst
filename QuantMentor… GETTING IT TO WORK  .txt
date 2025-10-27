@@ -1,0 +1,131 @@
+ QuantMentor… GETTING IT TO WORK 
+
+here’s the no-fluff, step-by-step on what to put where in VS Code and exactly how to run everything to get answers.
+
+0) Prereqs (once)
+	•	Install Python 3.10+
+	•	Install VS Code + the Python extension
+
+1) Make the project folders in VS Code
+In VS Code:
+	1	File → Open Folder… → create/open a folder named quantmentor
+	2	Inside quantmentor, create these subfolders:
+
+quantmentor/
+  scripts/
+  examples/
+  docs/
+  prompts/
+
+2) Add the key files (what goes where)
+A) Python scripts → quantmentor/scripts/
+	•	sharpe_demo.py (basic Sharpe)
+	•	sharpe_demo_plus.py (rolling Sharpe + chart + t-stat)
+	•	backtest_scaffold_plus.py (fees, log/simple returns, open/close exec, risk metrics, tearsheet)
+	•	risk_attribution.py (variance by ticker)
+If you don’t have them locally, copy the code we discussed into files with those exact names under scripts/.
+B) Example data → quantmentor/examples/
+	•	sample_returns.csv (for Sharpe demos)
+	•	ohlc_synth.csv (for backtest demos; columns: date,open,close)
+	•	ohlc_with_rf.csv (backtest + risk-free; columns: date,open,close,risk_free_daily)
+	•	(Optional outputs land here too, e.g., rolling_sharpe.png, tearsheet.csv)
+Minimal CSVs you can paste now (so you can run immediately):
+examples/sample_returns.csv
+
+date,strategy_return,risk_free_daily
+2024-01-02,0.0020,0.00005
+2024-01-03,-0.0010,0.00005
+2024-01-04,0.0030,0.00005
+2024-01-05,0.0000,0.00005
+2024-01-08,-0.0020,0.00005
+2024-01-09,0.0015,0.00005
+2024-01-10,0.0025,0.00005
+examples/ohlc_with_rf.csv
+
+date,open,close,risk_free_daily
+2024-01-02,100.00,100.30,0.00005
+2024-01-03,100.25,100.15,0.00005
+2024-01-04,100.20,100.65,0.00005
+2024-01-05,100.60,100.60,0.00005
+2024-01-08,100.55,100.35,0.00005
+2024-01-09,100.40,100.55,0.00005
+2024-01-10,100.50,100.80,0.00005
+(You can add more rows later; these are just to smoke-test.)
+C) Project helper files in the root (optional but recommended)
+	•	README.md
+	•	requirements.txt    pandas
+	•	numpy
+	•	matplotlib
+	•	  
+
+3) Create a virtual environment & install deps (inside VS Code)
+	1	Open the VS Code Terminal (Ctrl+`)
+	2	Run:    # create venv
+	3	python -m venv .venv
+	4	
+	5	# activate it
+	6	# Windows:
+	7	.venv\Scripts\activate
+	8	# macOS/Linux:
+	9	source .venv/bin/activate
+	10	
+	11	# install packages
+	12	pip install -r requirements.txt
+	13	  
+	14	In VS Code’s Command Palette → Python: Select Interpreter → choose the one from .venv.
+
+4) Run the scripts (copy/paste these commands)
+Make sure your terminal path is the project root quantmentor/.
+A) Sharpe (with rolling chart)
+
+python scripts/sharpe_demo_plus.py examples/sample_returns.csv --window 5 --out examples/rolling_sharpe.png
+You’ll get:
+	•	Console: daily & annualized Sharpe + a short explanation
+	•	File: examples/rolling_sharpe.png (the rolling annualized Sharpe plot)
+B) Backtest scaffold (no risk-free)
+
+python scripts/backtest_scaffold_plus.py examples/ohlc_with_rf.csv --fee-bps 1.5 --window 5
+You’ll get:
+	•	Console “Mini Risk Summary”: vol (ann), Sharpe (ann), Max DD, cumulative return, trade count
+	•	(No tearsheet unless you ask for it)
+With risk-free + tearsheet:
+
+python scripts/backtest_scaffold_plus.py examples/ohlc_with_rf.csv \
+  --fee-bps 1.5 \
+  --window 5 \
+  --riskfree-col risk_free_daily \
+  --tearsheet examples/tearsheet.csv
+Outputs:
+	•	Console summary (now on excess returns)
+	•	examples/tearsheet.csv with the key metrics (great for versioning/runs)
+Switch execution basis & return convention:
+
+# open-to-open, log returns
+python scripts/backtest_scaffold_plus.py examples/ohlc_with_rf.csv \
+  --exec open --use-log-returns --fee-bps 2 --window 5
+C) Risk attribution (variance by ticker)
+If you have per-ticker returns (columns: date,ticker,return):
+
+python scripts/risk_attribution.py examples/returns_by_ticker.csv
+Prints a ranking of tickers by their standalone variance (quick risk triage).
+
+5) How to get the answers you want (which script does what)
+	•	“Is my strategy any good on a risk-adjusted basis?” Run sharpe_demo_plus.py on a returns CSV → check Sharpe (annualized) and rolling Sharpe for stability.
+	•	“What’s the live P&L profile with a toy rule?” Run backtest_scaffold_plus.py on OHLC data → check cumulative return, Sharpe, Max DD, hit rate (if using the extended version). Use flags to reflect your assumptions:
+	◦	--exec open|close (execution timing)
+	◦	--use-log-returns (return convention)
+	◦	--fee-bps (friction)
+	◦	--riskfree-col risk_free_daily (true excess returns)
+	◦	--tearsheet examples/tearsheet.csv (saved metrics)
+	•	“Which names are causing the most noise?” Run risk_attribution.py on per-ticker returns → see the variance leaderboard.
+
+6) Common pitfalls (quick fixes)
+	•	Module not found / wrong Python → Select the .venv interpreter in VS Code.
+	•	CSV path errors → Make sure paths are relative to the repo root (examples/...), or drag the file into the terminal to paste an absolute path.
+	•	--exec open error → Your CSV must have an open column.
+	•	Risk-free column → The name you pass to --riskfree-col must match the CSV header exactly (e.g., risk_free_daily).
+
+7) Next steps to customize
+	•	Edit generate_signals() in backtest_scaffold_plus.py to implement your real signal.
+	•	Replace the example CSVs with your own data (same columns).
+	•	Keep saving tearsheets per run so you can compare versions.
