@@ -1,0 +1,246 @@
+CODE WALK THROUGH Backtest_Scaffold _Plus
+
+here’s a tight, line-by-line walkthrough of your Backtest Scaffold Plus (this version: fees, log/simple returns, open/close execution, rolling Sharpe, max DD, mini risk summary). I’ll explain what each line does, why it’s there, and the finance meaning behind it.
+
+Header & purpose
+
+#!/usr/bin/env python3
+"""Backtest Scaffold Plus (Educational)
+
+Adds:
+- --fee-bps ...
+...
+"""
+
+
+	•	Shebang lets Unix-like systems run the script directly.
+	•	Docstring is the operator manual: what flags exist and what the script outputs. Finance meaning: You’re building a small but honest backtest: choose return convention (log/simple), execution basis (open/close), include simple costs, and report core risk stats.
+
+Imports & constants
+
+import argparse
+import math
+import sys
+from typing import Tuple
+
+import numpy as np
+import pandas as pd
+
+TRADING_DAYS = 252
+
+
+	•	argparse for CLI flags; math/numpy/pandas for numerics; Tuple for type hints.
+	•	TRADING_DAYS=252 is the annualization anchor. Finance meaning: Anything “annualized” assumes daily frequency and √time scaling (i.i.d. returns). If you have autocorrelation or vol clustering, √252 is only an approximation.
+
+Price → returns
+
+def compute_returns_from_price(series: pd.Series, use_log: bool) -> pd.Series:
+    series = series.astype(float)
+    if use_log:
+        return np.log(series).diff()
+    else:
+        return series.pct_change()
+
+
+	•	Converts prices to returns:
+	◦	log: log(P_t) - log(P_{t-1}) (additive over time, nice for math),
+	◦	simple: P_t/P_{t-1} - 1 (more intuitive as % change).
+	•	First row becomes NaN; you’ll fill it later. Finance meaning: Be consistent. For small moves, log ≈ simple; for larger moves they diverge.
+
+Signal (toy example)
+
+def generate_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """Toy signal: long today if yesterday's close-to-close return < 0."""
+    out = df.copy()
+    y_ret = out['close'].pct_change().shift(1)
+    out['signal'] = (y_ret < 0).astype(int)  # 1 = long, 0 = flat
+    return out
+
+
+	•	Copies the DataFrame to avoid mutation.
+	•	Computes yesterday’s close-to-close return (pct_change().shift(1)).
+	•	Signal is 1 if yesterday was down (mean-reversion toy), else 0. Finance meaning: The .shift(1) enforces causality: you decide using only information available before today’s return is realized. That’s the anti–look-ahead guardrail.
+
+Apply strategy (execution & costs)
+
+def apply_strategy(df: pd.DataFrame, price_col: str, fee_bps: float, use_log: bool) -> Tuple[pd.DataFrame, int]:
+    """Apply position to returns based on chosen execution price column.
+    Position for day t is yesterday's signal (no look-ahead). Costs charged per flip.
+    Returns modified DataFrame and trade count.
+    """
+    out = df.copy()
+    out['ret'] = compute_returns_from_price(out[price_col], use_log).fillna(0.0)
+    pos = out['signal'].shift(1).fillna(0.0)
+    out['strategy_ret'] = pos * out['ret']
+
+
+	•	Builds the per-day return series from either open or close, per flag.
+	•	Uses yesterday’s position (signal.shift(1)) for today’s return: position_{t-1} × return_t. Finance meaning: This is the correct P&L alignment for daily bars: you decide at t-1, you earn returns over t-1→t.
+
+
+
+    # flips: count position changes 0<->1
+    flips = out['signal'].diff().abs().fillna(0.0)
+    trade_count = int(flips.sum())  # each flip is an order; buy and sell both count
+
+    # fee per flip (per-side bps)
+    fee = fee_bps / 10000.0
+    out['strategy_ret'] = out['strategy_ret'] - flips * fee
+
+    return out, trade_count
+
+
+	•	signal.diff().abs() is 1 when you change state (0→1 or 1→0), 0 otherwise. Sum gives orders (each side).
+	•	Subtract a fixed per-flip fee (basis points) from that day’s return.
+	•	Returns enhanced df and trade count. Finance meaning: This is a coarse cost model: no spread/slippage/impact/size. It’s enough to de-fantasize Sharpe without bogging you in microstructure.
+
+Annualization helpers
+
+def annualize_vol(std_daily: float) -> float:
+    return std_daily * math.sqrt(TRADING_DAYS)
+
+def annualized_sharpe(mean_daily: float, std_daily: float) -> float:
+    if std_daily == 0:
+        return np.nan
+    return (mean_daily / std_daily) * math.sqrt(TRADING_DAYS)
+
+
+	•	Annualized vol = σ_daily × √252.
+	•	Annualized Sharpe = (μ/σ)_daily × √252 (i.i.d. assumption again). Finance meaning: Good for a first pass; if serial correlation exists, the simple √time scaling overstates Sharpe.
+
+Max drawdown
+
+def max_drawdown_from_returns(ret: pd.Series) -> float:
+    """Compute max drawdown from a return series (fraction, negative number)."""
+    eq = (1.0 + ret.fillna(0.0)).cumprod()
+    peak = eq.cummax()
+    dd = (eq / peak) - 1.0
+    return float(dd.min()) if len(dd) else np.nan
+
+
+	•	Builds the equity curve, tracks historical peaks, measures the deepest trough.
+	•	Returns a negative fraction (e.g., -0.23 for −23%). Finance meaning: This is the pain metric. Two strategies can share a Sharpe but feel wildly different due to drawdown.
+
+Rolling Sharpe
+
+def rolling_sharpe_annualized(excess: pd.Series, window: int) -> pd.Series:
+    m = excess.rolling(window, min_periods=window).mean()
+    s = excess.rolling(window, min_periods=window).std(ddof=1)
+    rs = m / s
+    return rs * math.sqrt(TRADING_DAYS)
+
+
+	•	Computes rolling mean and std over a fixed window, then annualizes.
+	•	Finance meaning: Stability check. If full-sample Sharpe is decent but rolling Sharpe collapses in regimes, it’s fragile.
+
+Main: CLI, load, validate, run
+
+def main():
+    parser = argparse.ArgumentParser(description="Backtest Scaffold Plus (Educational)")
+    parser.add_argument("csv_path", help="Path to CSV with date, close (and open if --exec open)")
+    parser.add_argument("--fee-bps", type=float, default=1.0, help="Trading cost per flip in bps (default: 1)")
+    parser.add_argument("--use-log-returns", action="store_true", help="Use log returns instead of simple returns")
+    parser.add_argument("--exec", dest="exec_price", choices=["open", "close"], default="close",
+                        help="Execution price basis for returns (default: close)")
+    parser.add_argument("--window", type=int, default=60, help="Rolling Sharpe window in trading days (default: 60)")
+    args = parser.parse_args()
+
+
+	•	Exposes the knobs:
+	◦	fees,
+	◦	return convention,
+	◦	execution basis,
+	◦	rolling window.
+
+
+    df = pd.read_csv(args.csv_path, parse_dates=["date"]).sort_values("date").reset_index(drop=True)
+    required = {"date", "close"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"CSV must include columns: {required}")
+    if args.exec_price == "open" and "open" not in df.columns:
+        raise ValueError("CSV missing 'open' column required for --exec open")
+
+
+	•	Loads CSV, ensures chronological order.
+	•	Validates required columns; if --exec open, demands open. Finance meaning: Sorting is crucial for any rolling/window logic and for correct P&L alignment.
+
+
+    df = generate_signals(df)
+
+    price_col = args.exec_price
+    df, trade_count = apply_strategy(df, price_col, args.fee_bps, args.use_log_returns)
+
+
+	•	Creates the toy signal; applies it using chosen execution basis & cost model.
+
+
+    # Excess return vs. a zero baseline (risk-free omitted to keep scaffold compact)
+    excess = df['strategy_ret']  # educational scaffold
+
+
+	•	Treats strategy returns as excess vs. 0 (no risk-free subtraction). Finance meaning: For a quick demo that’s fine; if you add a risk-free series, compute true excess return = strategy − rf.
+
+    mean_d = excess.mean()
+    std_d = excess.std(ddof=1)
+    vol_ann = annualize_vol(std_d)
+    sharpe_ann = annualized_sharpe(mean_d, std_d)
+    mdd = max_drawdown_from_returns(excess)
+
+
+	•	Daily mean & std → annualized vol and Sharpe.
+	•	Max drawdown from the return stream.
+
+    # Rolling Sharpe
+    window = max(5, int(args.window))
+    roll_sharpe = rolling_sharpe_annualized(excess, window)
+    last_roll = roll_sharpe.dropna().iloc[-1] if roll_sharpe.dropna().shape[0] else np.nan
+
+
+	•	Guard tiny windows (min 5).
+	•	Compute rolling Sharpe and extract the latest value.
+
+    # Cumulative return
+    cum_ret = (1.0 + excess).cumprod().iloc[-1] - 1.0 if len(excess) else np.nan
+
+
+	•	Converts daily returns to total return over the period. Finance meaning: A simple KPI that pairs with Sharpe and max DD.
+
+Console “tearsheet”
+
+    print("Backtest Scaffold Plus (Educational)")
+    print("-" * 40)
+    print(f"Rows: {len(df)} | Exec basis: {price_col} | Returns: {'log' if args.use_log_returns else 'simple'}")
+    print(f"Fee (per flip): {args.fee_bps:.2f} bps | Trade count (flips): {trade_count}")
+    print()
+    print("Mini Risk Summary")
+    print("-----------------")
+    print(f"Mean daily excess:    {mean_d:.8f}" if not np.isnan(mean_d) else "Mean daily excess:    nan")
+    print(f"Std daily excess:     {std_d:.8f}" if not np.isnan(std_d) else "Std daily excess:     nan")
+    print(f"Vol (annualized):     {vol_ann:.4f}" if not np.isnan(vol_ann) else "Vol (annualized):     nan")
+    print(f"Sharpe (annualized):  {sharpe_ann:.4f}" if not np.isnan(sharpe_ann) else "Sharpe (annualized):  nan")
+    print(f"Max Drawdown:         {mdd:.2%}" if not np.isnan(mdd) else "Max Drawdown:         nan")
+    print(f"Cumulative return:    {cum_ret:.2%}" if not np.isnan(cum_ret) else "Cumulative return:    nan")
+    print()
+    print(f"Rolling Sharpe (ann.) window={window} → last: {last_roll:.4f}" if not np.isnan(last_roll) else f"Rolling Sharpe (ann.) window={window} → insufficient data")
+
+
+	•	Prints the configuration and a compact risk snapshot:
+	◦	Mean/std (daily) → Vol (ann.), Sharpe (ann.)
+	◦	Max Drawdown, Cumulative return
+	◦	Rolling Sharpe (last value) to hint at stability. Finance meaning: This is exactly the “first glance” info a quant wants before deeper diagnostics.
+
+Entrypoint
+
+if __name__ == "__main__":
+    main()
+
+
+	•	Standard “only run when executed” pattern.
+
+Key assumptions & how they matter
+	•	No look-ahead: enforced via shift(1) in both signal creation and P&L. This is non-negotiable.
+	•	Execution basis: --exec open|close approximates how you hold the risk. Real fills include spread, slippage, and latency.
+	•	Fees: flat bps per flip. Useful friction, not a full microstructure model.
+	•	Annualization: √252 assumes i.i.d. daily returns; serial correlation will bias the Sharpe upward.
+	•	No risk-free: this version treats strategy return as “excess.” If you care about true Sharpe, subtract a proper daily rf series.
+	•	Toy signal: it’s a placeholder; replace it with your actual factor/model.

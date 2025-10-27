@@ -1,0 +1,322 @@
+CODE WALK THROUGH backtest_scaffold_plus(1)
+
+let’s do a surgical, line-by-line read of backtest_scaffold_plus.py. I’ll explain (1) what the Python does, (2) what the finance intent is, and (3) subtle assumptions/risks you should be aware of.
+
+File preamble & meta
+
+#!/usr/bin/env python3
+"""Backtest Scaffold Plus (Educational)
+
+Adds:
+- --fee-bps: trading cost in basis points per flip (entry/exit sides modeled via flips)
+- --use-log-returns: use log returns instead of simple returns
+- --exec open|close: execution price basis for return calc (default: close)
+- --window: rolling Sharpe window (default 60)
+- --riskfree-col: subtract a daily risk-free return column to form excess returns
+- Risk summary: vol (ann), Sharpe (ann), Sortino (ann), max DD, hit rate, trade count, cumulative return
+- Tiny CSV tearsheet with summary metrics via --tearsheet path.csv
+
+CSV Requirements:
+- Must include 'date' and:
+  - 'close' (always required)
+  - 'open' if you choose --exec open
+- If using --riskfree-col NAME, CSV must include that column containing a daily return series.
+
+Notes:
+- Risk-free series is assumed to be a daily simple return rate. If using log returns for price, we still subtract the risk-free *simple* rate from the strategy's daily return for the excess calculation (educational simplification).
+"""
+
+
+	•	Shebang + docstring.
+	•	The docstring is your “operator manual”: the CLI flags, what the CSV needs, and one important modeling choice: even when price returns are log, the risk-free series is treated as simple daily and directly subtracted. That’s fine for an educational scaffold, but in production you’d harmonize return conventions (log vs simple).
+Finance intent: you’re running a tiny, honest backtest with configurable execution basis (open/close), optional log returns, basic costs, a risk-free series, and a small risk report.
+
+Imports & constants
+
+import argparse
+import math
+import sys
+from typing import Tuple, Dict
+
+import numpy as np
+import pandas as pd
+
+TRADING_DAYS = 252
+
+
+	•	argparse parses CLI flags.
+	•	math, numpy, pandas: numerics/data.
+	•	TRADING_DAYS=252: annualization constant (approx US trading days).
+Finance note: All “annualized” metrics use √252 (vol/Sharpe) scaling—assumes daily frequency and i.i.d. returns. Serial correlation/vol-clustering breaks this assumption.
+
+Return constructor
+
+def compute_returns_from_price(series: pd.Series, use_log: bool) -> pd.Series:
+    series = series.astype(float)
+    if use_log:
+        return np.log(series).diff()
+    else:
+        return series.pct_change()
+
+
+
+	•	Converts price series to daily returns as either:
+	◦	log returns (log P_t - log P_{t-1}), or
+	◦	simple returns (P_t / P_{t-1} - 1
+Why it matters: log returns add nicely across time, simple returns don’t. For small moves they’re ~equal; for large moves, they differ. Pick one and be consistent.
+
+Signal generation (toy)
+
+def generate_signals(df: pd.DataFrame) -> pd.DataFrame:
+    """Toy signal: long today if yesterday's close-to-close return < 0."""
+    out = df.copy()
+    y_ret = out['close'].pct_change().shift(1)
+    out['signal'] = (y_ret < 0).astype(int)  # 1 = long, 0 = flat
+    return out
+
+
+	•	Creates a mean-reversion toy rule: if yesterday’s return was negative, be long today.
+	•	.shift(1) ensures you only use information known at today’s decision time.
+Quant meaning: This enforces no look-ahead bias—critical in any backtest. It’s just a placeholder; you’ll replace it with your actual model.
+
+Strategy application (execution + costs)
+
+def apply_strategy(df: pd.DataFrame, price_col: str, fee_bps: float, use_log: bool) -> Tuple[pd.DataFrame, int]:
+    """Apply position to returns based on chosen execution price column.
+    Position for day t is yesterday's signal (no look-ahead). Costs charged per flip.
+    Returns modified DataFrame and trade count.
+    """
+    out = df.copy()
+    out['ret'] = compute_returns_from_price(out[price_col], use_log).fillna(0.0)
+    pos = out['signal'].shift(1).fillna(0.0)
+    out['strategy_ret'] = pos * out['ret']
+
+
+	•	Chooses which price defines returns (open or close).
+	•	Computes the series of returns from that price.
+	•	Applies yesterday’s signal as today’s exposure: position_t-1 × return_t.
+	◦	This respects a realistic timing: decide at t-1, earn P&L over t-1→t.
+
+
+    # flips: count position changes 0<->1
+    flips = out['signal'].diff().abs().fillna(0.0)
+    trade_count = int(flips.sum())  # each flip is an order; buy and sell both count
+
+    # fee per flip (per-side bps)
+    fee = fee_bps / 10000.0
+    out['strategy_ret'] = out['strategy_ret'] - flips * fee
+
+    return out, trade_count
+
+
+	•	Trading costs: every time signal changes (0↔1), you subtract fee_bps (per-side) from that day’s return.
+	•	trade_count is the number of flips (orders). A full round trip (buy then sell) incurs two flips, i.e., two fees.
+Caveat: This is coarse—no spread/slippage/impact/partial fills. It’s educational friction to avoid absurd Sharpe.
+
+Risk helpers
+
+def annualize_vol(std_daily: float) -> float:
+    return std_daily * math.sqrt(TRADING_DAYS)
+
+def annualized_sharpe(mean_daily: float, std_daily: float) -> float:
+    if std_daily == 0:
+        return np.nan
+    return (mean_daily / std_daily) * math.sqrt(TRADING_DAYS)
+
+def annualized_sortino(mean_daily: float, downside_std_daily: float) -> float:
+    if downside_std_daily == 0:
+        return np.nan
+    return (mean_daily / downside_std_daily) * math.sqrt(TRADING_DAYS)
+
+
+	•	Vol (ann.): σ_daily × √252.
+	•	Sharpe (ann.): (μ/σ)_daily × √252.
+	•	Sortino (ann.): (μ/σ_downside)_daily × √252 using only downside deviations.
+Finance meaning: Sortino emphasizes harmful volatility. If Sortino ≫ Sharpe, upside shocks dominate; if they’re similar, downside ≈ total volatility.
+
+Max drawdown
+
+def max_drawdown_from_returns(ret: pd.Series) -> float:
+    """Compute max drawdown from a return series (fraction, negative number)."""
+    eq = (1.0 + ret.fillna(0.0)).cumprod()
+    peak = eq.cummax()
+    dd = (eq / peak) - 1.0
+    return float(dd.min()) if len(dd) else np.nan
+
+
+	•	Builds an equity curve, then compares it to its historical peak.
+	•	Returns the worst (most negative) drawdown.
+Meaning: your maximum pain from peak to trough—vital complement to Sharpe.
+
+Rolling Sharpe
+
+def rolling_sharpe_annualized(excess: pd.Series, window: int) -> pd.Series:
+    m = excess.rolling(window, min_periods=window).mean()
+    s = excess.rolling(window, min_periods=window).std(ddof=1)
+    rs = m / s
+    return rs * math.sqrt(TRADING_DAYS)
+
+
+	•	Rolling mean/std over a fixed window; annualizes.
+	•	Useful for stability. A high full-sample Sharpe with collapsing rolling Sharpe is a red flag.
+
+Summary metrics bundle
+
+def compute_summary_metrics(excess: pd.Series) -> Dict[str, float]:
+    xs = excess.dropna().astype(float)
+    n = xs.shape[0]
+    mean_d = xs.mean()
+    std_d = xs.std(ddof=1)
+    # downside deviation uses only negative excess values relative to 0
+    downside = xs[xs < 0.0]
+    down_std_d = downside.std(ddof=1) if downside.shape[0] > 1 else np.nan
+    vol_ann = annualize_vol(std_d) if not np.isnan(std_d) else np.nan
+    sharpe_ann = annualized_sharpe(mean_d, std_d) if not np.isnan(std_d) else np.nan
+    sortino_ann = annualized_sortino(mean_d, down_std_d) if not np.isnan(down_std_d) else np.nan
+    mdd = max_drawdown_from_returns(xs)
+    cum_ret = (1.0 + xs).cumprod().iloc[-1] - 1.0 if n else np.nan
+    hit_rate = float((xs > 0).mean()) if n else np.nan
+    return {
+        "n": n,
+        "mean_daily_excess": mean_d,
+        "std_daily_excess": std_d,
+        "downside_std_daily": down_std_d,
+        "vol_annualized": vol_ann,
+        "sharpe_annualized": sharpe_ann,
+        "sortino_annualized": sortino_ann,
+        "max_drawdown": mdd,
+        "hit_rate": hit_rate,
+        "cumulative_return": cum_ret,
+    }
+
+
+	•	Cleans NA’s, computes mean, std, downside std.
+	•	Derives vol, Sharpe, Sortino, max DD, cumulative return, hit rate.
+	•	Hit rate = % of days with positive excess return (after risk-free & fees).
+Finance nuance: A low hit rate + good Sharpe often implies positively skewed payoff (fewer but larger wins). High hit rate + poor Sharpe can be lots of small wins and occasional big losses.
+
+CLI & I/O
+
+def main():
+    parser = argparse.ArgumentParser(description="Backtest Scaffold Plus (Educational)")
+    parser.add_argument("csv_path", help="Path to CSV with date, close (and open if --exec open)")
+    parser.add_argument("--fee-bps", type=float, default=1.0, help="Trading cost per flip in bps (default: 1)")
+    parser.add_argument("--use-log-returns", action="store_true", help="Use log returns instead of simple returns")
+    parser.add_argument("--exec", dest="exec_price", choices=["open", "close"], default="close",
+                        help="Execution price basis for returns (default: close)")
+    parser.add_argument("--window", type=int, default=60, help="Rolling Sharpe window in trading days (default: 60)")
+    parser.add_argument("--riskfree-col", type=str, default=None, help="Name of daily risk-free return column to subtract")
+    parser.add_argument("--tearsheet", type=str, default=None, help="Optional path to save a tiny CSV tearsheet of summary metrics")
+    args = parser.parse_args()
+
+
+	•	All user-facing knobs live here.
+	•	--exec toggles open vs close execution basis.
+	•	--riskfree-col lets you provide a daily risk-free return series (e.g., T-bill proxied/converted to daily).
+
+    df = pd.read_csv(args.csv_path, parse_dates=["date"]).sort_values("date").reset_index(drop=True)
+    required = {"date", "close"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"CSV must include columns: {required}")
+    if args.exec_price == "open" and "open" not in df.columns:
+        raise ValueError("CSV missing 'open' column required for --exec open")
+
+
+	•	Loads and sorts by date.
+	•	Requires close (and open if you asked for --exec open).
+	•	Sorting prevents subtle bugs in rolling/window ops.
+
+    df = generate_signals(df)
+
+    price_col = args.exec_price
+    df, trade_count = apply_strategy(df, price_col, args.fee_bps, args.use_log_returns)
+
+
+	•	Build the toy signal; apply it using the chosen return basis and costs.
+	•	trade_count is total flips (entries/exits).
+
+    # Build excess return series
+    strategy = df['strategy_ret']
+    if args.riskfree_col:
+        if args.riskfree_col not in df.columns:
+            raise ValueError(f"CSV missing risk-free column: '{args.riskfree_col}'")
+        excess = strategy - df[args.riskfree_col].astype(float).fillna(0.0)
+    else:
+        excess = strategy
+
+
+	•	Excess returns = strategy returns − risk-free (if provided).
+	•	If you used log price returns, this still subtracts a simple risk-free—fine for demo; in production, you’d align conventions (e.g., convert risk-free to log).
+
+    # Summary metrics
+    metrics = compute_summary_metrics(excess)
+
+    # Rolling Sharpe
+    window = max(5, int(args.window))
+    roll_sharpe = rolling_sharpe_annualized(excess, window)
+    last_roll = roll_sharpe.dropna().iloc[-1] if roll_sharpe.dropna().shape[0] else np.nan
+
+
+	•	Builds the risk snapshot and a rolling Sharpe series; prints the last value for a quick stability read.
+
+    print("Backtest Scaffold Plus (Educational)")
+    print("-" * 40)
+    print(f"Rows: {len(df)} | Exec basis: {price_col} | Returns: {'log' if args.use_log_returns else 'simple'}")
+    print(f"Fee (per flip): {args.fee_bps:.2f} bps | Trade count (flips): {trade_count}")
+    if args.riskfree_col:
+        print(f"Risk-free column: {args.riskfree_col}")
+    print()
+    print("Mini Risk Summary")
+    print("-----------------")
+    print(f"Observations (n):      {metrics['n']}")
+    print(f"Mean daily excess:     {metrics['mean_daily_excess']:.8f}" if not np.isnan(metrics['mean_daily_excess']) else "Mean daily excess:     nan")
+    print(f"Std daily excess:      {metrics['std_daily_excess']:.8f}" if not np.isnan(metrics['std_daily_excess']) else "Std daily excess:      nan")
+    print(f"Downside std (daily):  {metrics['downside_std_daily']:.8f}" if not np.isnan(metrics['downside_std_daily']) else "Downside std (daily):  nan")
+    print(f"Vol (annualized):      {metrics['vol_annualized']:.4f}" if not np.isnan(metrics['vol_annualized']) else "Vol (annualized):      nan")
+    print(f"Sharpe (annualized):   {metrics['sharpe_annualized']:.4f}" if not np.isnan(metrics['sharpe_annualized']) else "Sharpe (annualized):   nan")
+    print(f"Sortino (annualized):  {metrics['sortino_annualized']:.4f}" if not np.isnan(metrics['sortino_annualized']) else "Sortino (annualized):  nan")
+    print(f"Max Drawdown:          {metrics['max_drawdown']:.2%}" if not np.isnan(metrics['max_drawdown']) else "Max Drawdown:          nan")
+    print(f"Hit rate:              {metrics['hit_rate']:.2%}" if not np.isnan(metrics['hit_rate']) else "Hit rate:              nan")
+    print(f"Cumulative return:     {metrics['cumulative_return']:.2%}" if not np.isnan(metrics['cumulative_return']) else "Cumulative return:     nan")
+    print()
+    print(f"Rolling Sharpe (ann.) window={window} → last: {last_roll:.4f}" if not np.isnan(last_roll) else f"Rolling Sharpe (ann.) window={window} → insufficient data")
+
+
+	•	Human-friendly tearsheet in the console—the essential stats a quant glances at first.
+
+    # Optional tearsheet CSV
+    if args.tearsheet:
+        tiny = pd.DataFrame([{k: metrics[k] for k in [
+            "n","mean_daily_excess","std_daily_excess","downside_std_daily",
+            "vol_annualized","sharpe_annualized","sortino_annualized",
+            "max_drawdown","hit_rate","cumulative_return"
+        ]}])
+        tiny.to_csv(args.tearsheet, index=False)
+        print(f"Tearsheet saved to: {args.tearsheet}")
+
+
+	•	Exports a compact CSV with the summary metrics. Easy to archive, compare runs, or feed into a dashboard.
+
+if __name__ == "__main__":
+    main()
+
+
+	•	Standard CLI entrypoint.
+
+Subtleties & best-practice notes
+	•	Causality/alignment: The script carefully uses yesterday’s signal for today’s returns—this is the guardrail against future leak.
+	•	Execution basis: --exec open approximates open-to-open returns; --exec close approximates close-to-close. Real fills have slippage, spread, latency. For intraday rules, you’d need OHLCV and proper execution timestamps/prices.
+	•	Costs model: Costs per flip (per side). For realistic modeling, add spread/slippage proportional to volatility, and size-dependent impact.
+	•	Risk-free handling: The scaffold subtracts a daily simple risk-free rate. If you use log price returns, strictly speaking you’d want a log risk-free (or convert appropriately).
+	•	Annualization: √252 scaling assumes i.i.d. If returns are autocorrelated (common), annualized Sharpe can be optimistic. A more careful approach adjusts for autocorrelation (e.g., Lo’s method).
+	•	Sortino: Uses 0 as the MAR (minimum acceptable return). You might prefer using risk-free as MAR or another hurdle.
+	•	Sampling window: All stats are sample estimates. Short windows → noisy metrics. Use rolling windows and out-of-sample validation.
+
+
+
+
+
+
+
+
+

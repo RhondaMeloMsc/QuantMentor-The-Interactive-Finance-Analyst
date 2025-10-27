@@ -1,0 +1,27 @@
+THE PURPOSE OF THE ohlc_synth.csv
+
+
+
+ohlc_synth.csv is a tiny, synthetic dataset I generated so you can run and sanity-check the backtest scripts immediately, without hunting for real market data.
+What it’s for
+	•	Quick smoke tests: Verify the scripts run end-to-end (file loading, signal generation, execution alignment, costs, metrics).
+	•	Covers both execution modes: It has open and close columns, so you can test --exec open and --exec close.
+	•	Try return conventions: Safe place to compare --use-log-returns vs simple returns.
+	•	Deterministic & shareable: No licenses or API keys; the series is reproducible, so results are stable across machines.
+	•	CI / examples: Handy fixture for automated checks and for docs/readme examples.
+What’s inside
+	•	Columns: date, open, close (business-day frequency).
+	•	The price path is a mild random walk with small “overnight” gaps between close and next day open.
+How to use it
+
+# Close-to-close, simple returns
+python scripts/backtest_scaffold_plus.py /mnt/data/ohlc_synth.csv --fee-bps 1.5 --window 20
+
+# Open-to-open, log returns
+python scripts/backtest_scaffold_plus.py /mnt/data/ohlc_synth.csv --exec open --use-log-returns --fee-bps 2 --window 40
+
+
+What it is NOT
+	•	Not real market data. Don’t infer genuine strategy performance from it.
+	•	Not for research conclusions. It’s purely a functional test bed to validate logic (no look-ahead, cost application, rolling metrics, etc.).
+

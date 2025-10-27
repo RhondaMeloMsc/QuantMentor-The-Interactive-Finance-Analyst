@@ -1,0 +1,60 @@
+THE PURPOSE OF the sample_returns.csv
+
+🎯 Purpose of sample_returns.csv
+The file sample_returns.csv is a tiny example dataset created to let you instantly test and demonstrate your Sharpe Ratio scripts — specifically sharpe_demo.py and sharpe_demo_plus.py — without needing any real market data.
+It exists to make the Sharpe ratio calculations reproducible, testable, and explainable from the very first run.
+
+🧩 Why it was included
+When you’re writing quant utilities (like Sharpe or backtesting scaffolds), you need a self-contained test input. This CSV does exactly that — it ensures anyone cloning your repo or running your educational scripts can do so out of the box.
+No data APIs. No credentials. No dependencies.
+That’s why the file is called sample_returns.csv — it’s a small, synthetic dataset with the right structure to validate your Sharpe logic end-to-end.
+
+🧠 What’s inside
+Column
+Meaning
+date
+Daily business dates (e.g., “2024-01-02”, “2024-01-03”…).
+strategy_return
+Simulated daily strategy returns — small random numbers that approximate real trading results.
+risk_free_daily
+Simulated daily risk-free rate — usually around 0.00005 (≈1.25% annualized).
+So each row represents a single trading day, with your strategy’s return and the risk-free rate for that day.
+
+⚙️ How it’s used
+When you run:
+
+python scripts/sharpe_demo_plus.py examples/sample_returns.csv --window 60 --out rolling_sharpe.png
+the script:
+	1	Reads strategy_return and risk_free_daily.
+	2	Computes excess returns = strategy_return - risk_free_daily.
+	3	Calculates mean, standard deviation, and the Sharpe ratio (daily and annualized).
+	4	Plots the rolling Sharpe curve and saves it to rolling_sharpe.png.
+This CSV lets you test:
+	•	Sharpe computation logic,
+	•	Rolling window mechanics (--window flag),
+	•	Chart output (--out flag),
+	•	And educational print statements.
+
+🧮 Finance interpretation
+The data is synthetic but realistic — enough to simulate how a quant analyst would:
+	•	Calculate risk-adjusted returns,
+	•	Annualize the Sharpe ratio using √252, and
+	•	Interpret stability over time.
+It gives you a safe sandbox to learn and explain why Sharpe ratios matter and how to interpret them.
+
+🧾 In the bigger picture
+Here’s how it fits your project’s hierarchy:
+File
+Purpose
+sample_returns.csv
+Test input for Sharpe ratio demos.
+ohlc_synth.csv
+Test input for backtesting with open/close prices.
+ohlc_with_rf.csv
+Test input for excess returns (with risk-free series).
+rolling_sharpe.png
+Output visualization of rolling Sharpe over time.
+Together, they form a minimal quant lab environment that mirrors real professional analytics — all safely synthetic and self-contained.
+
+✅ In one sentence:
+sample_returns.csv is your educational testbed — a small synthetic return dataset used to verify, demonstrate, and visually explain how Sharpe ratios and rolling performance metrics are calculated and interpreted.

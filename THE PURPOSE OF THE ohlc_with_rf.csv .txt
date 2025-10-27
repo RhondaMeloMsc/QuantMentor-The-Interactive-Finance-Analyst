@@ -1,0 +1,57 @@
+THE PURPOSE OF THE ohlc_with_rf.csv 
+
+
+
+so here’s what the ohlc_with_rf.csv 
+
+🎯 Purpose
+It’s a synthetic test dataset that extends the simpler ohlc_synth.csv by adding a risk-free return column. This lets you test the --riskfree-col feature in your enhanced Backtest Scaffold Plus script.
+In short, it exists to validate that your script can:
+	1	Subtract a daily risk-free rate when computing excess returns.
+	2	Recalculate Sharpe and Sortino ratios correctly on that excess (not raw) return stream.
+	3	Print or export those results in the mini risk summary and tearsheet CSV.
+
+
+📊 What it contains
+Column
+Meaning
+date
+Daily business dates.
+open
+Synthetic open price series.
+close
+Synthetic close price series.
+riskfree (or rf)
+Small positive daily rate, e.g. ~0.00005 (≈1.25% annualized).
+So it mimics an environment where you have a T-bill proxy or daily funding rate.
+
+
+⚙️ Example usage
+
+# run strategy with risk-free adjustment
+python scripts/backtest_scaffold_plus.py ohlc_with_rf.csv \
+    --riskfree-col riskfree --fee-bps 1 --window 30
+The script will then:
+	•	load the CSV,
+	•	calculate daily returns,
+	•	subtract the riskfree column to get excess returns,
+	•	compute Sharpe, Sortino, max DD, etc., using that excess series.
+
+
+🧠 Why this is useful
+	•	Educational realism: In real quant backtests, Sharpe ratios must use excess returns.
+	•	Regression-ready: You can later extend this file to include a benchmark series (e.g. SPY_ret) for beta/alpha regressions.
+	•	Sanity check: Verifies your CLI flag parsing and risk-free logic before integrating actual market data (like FRED T-bill rates).
+
+
+
+
+
+
+
+
+
+
+
+ChatGPT can make mistakes. Check important info.
+
