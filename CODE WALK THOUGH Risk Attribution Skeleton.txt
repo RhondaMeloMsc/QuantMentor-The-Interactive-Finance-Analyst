@@ -1,0 +1,111 @@
+CODE WALK THOUGH Risk Attribution Skeleton
+
+
+let’s unpack the Risk Attribution Skeleton line by line, and translate every line into “what it really means” in finance terms.
+
+The script
+
+#!/usr/bin/env python3
+"""Risk Attribution Skeleton (Educational)
+
+Provide a CSV with columns: date, ticker, return
+The script estimates simple variance contributions by ticker.
+"""
+
+	•	Shebang: lets you run the file directly on Unix-like systems (./risk_attribution.py).
+	•	Docstring: this is a teaching scaffold. Input must be a tidy table with one row per (date, ticker) and a column named return (daily simple return is typical).
+Finance meaning: we’re going to look at each ticker’s return variability over time and rank them. It’s a baby step toward risk attribution.
+
+
+import sys, pandas as pd
+
+	•	Imports sys (for CLI args) and pandas (for data wrangling).
+
+
+def main(path):
+    df = pd.read_csv(path, parse_dates=["date"])
+
+	•	Defines the entry function and loads the CSV.
+	•	parse_dates=["date"] turns the date column into a proper datetime; that’s important if you later want time windows (e.g., last 60 trading days).
+Finance meaning: our dataset is a panel: many dates × many tickers.
+
+
+    required = {"date", "ticker", "return"}
+    if not required.issubset(df.columns):
+        raise ValueError(f"CSV must include {required}")
+
+	•	Schema check. You must have exactly these columns. If not, fail fast.
+Finance meaning: we expect returns already computed. (If you had prices instead, you’d need to compute returns first.)
+
+
+    by_ticker = df.groupby("ticker")["return"].var().sort_values(ascending=False)
+
+This single line does the core work:
+	1	df.groupby("ticker") — form a group for each ticker.
+	2	["return"].var() — within each ticker, compute the sample variance of the return series (pandas uses ddof=1 by default). Variance is the average squared deviation from the mean; it measures volatility (in squared-return units).
+	3	.sort_values(ascending=False) — rank tickers from highest variance (most volatile) to lowest.
+Finance meaning:
+	•	This is a per-ticker volatility ranking. It tells you which names are the noisiest over your sample.
+	•	The docstring says “estimates simple variance contributions by ticker.” That wording is intentionally loose: true portfolio risk contribution depends on portfolio weights and covariances. This line computes standalone variance by ticker, not each name’s contribution to a weighted portfolio’s variance.
+	•	Still, it’s useful: if your portfolio is roughly equal-weighted and correlations are similar, high-variance names tend to dominate your volatility. But beware: a low-variance name highly correlated with your portfolio could still contribute meaningfully to total risk.
+
+
+    print("Variance by ticker (higher = more contribution to total volatility):")
+    print(by_ticker.to_string())
+
+
+	•	Pretty-prints the series.
+Finance meaning:
+	•	Read as a league table of raw volatility by ticker.
+	•	Interpreting it literally as “contribution to total volatility” is an approximation. To compute actual % contribution to portfolio variance, you need weights and the covariance matrix (details below).
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python scripts/risk_attribution.py path/to/returns_by_ticker.csv")
+        sys.exit(1)
+    main(sys.argv[1])
+
+
+	•	Command-line glue. Requires a file path; otherwise prints usage.
+	•	Calls main(path).
+	•	
+
+What this really measures (and what it doesn’t)
+✅ What it gives you (correctly)
+	•	A ranking of tickers by their own return variance over the sample window.
+	•	A fast way to spot which names are the most volatile on a standalone basis.
+❗ What it doesn’t capture (yet)
+	•	Portfolio weights. In a real portfolio, a tiny position in a wild name may contribute less risk than a big position in a calm name.
+	•	Cross-asset covariance. Portfolio volatility isn’t the sum of standalone variances;   
+	•	Frequency scaling. Variance depends on the return frequency (daily vs weekly). The script doesn’t annualize; results are on the input frequency scale.
+	•	Robustness. Outliers or data quality issues can dominate variance. Sometimes you’ll want winsorization or robust estimators.
+
+If you wanted true “risk contribution” (% of portfolio variance)
+For a portfolio with weights vector
+	•	Portfolio variance: 
+	•	Marginal contribution to risk (per asset i):
+	•	Component (or absolute) contribution to risk: 
+	•	Percent contribution to risk: 
+This is the standard decomposition used on pro desks. It answers, “What fraction of my total volatility comes from each position, considering correlations?”
+
+Practical caveats you’d care about on a desk
+	•	Non-synchronous data / missing dates: ensure each ticker’s series lines up; fill/align carefully.
+	•	Survivorship bias: if your dataset only includes winners, variance estimates will be biased.
+	•	Regime dependence: compute over rolling windows (e.g., 60D/120D) to see if a name’s risk spikes in certain regimes.
+	•	Annualization: if you want annualized variance/vol, multiply by ~252 (for variance) or √252 (for vol).
+	•	Return definition: decide if you want simple or log returns; be consistent.
+
+Tiny upgrade (optional) to show both variance and volatility (annualized)
+If your input is daily returns:
+
+by_ticker_var = df.groupby("ticker")["return"].var(ddof=1)
+by_ticker_vol_ann = (by_ticker_var ** 0.5) * (252 ** 0.5)
+
+
+Now you can print both variance and annualized volatility per ticker—vol is often more intuitive.
+
+Summary (how to read the current output)
+	•	The script is intentionally minimal: it answers “which tickers are the most volatile (standalone)?”
+	•	Use it to triage risk hotspots quickly.
+	•	For real risk attribution, bring in weights and compute covariance-aware contributions as above. That’s the next step I can add when you’re ready.
