@@ -1,4 +1,4 @@
-CODE WALK  THOUGH Sharpe_DEMO
+CODE WALKTHOUGH Sharpe_DEMO
 
 1) Header & docstring
 
